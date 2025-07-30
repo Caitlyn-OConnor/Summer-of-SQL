@@ -1,0 +1,91 @@
+-- How many unique nodes are there on the Data Bank system?
+
+select 
+    count(distinct node_id) as dist_nodes
+from customer_nodes
+
+
+-- What is the number of nodes per region?
+
+select 
+    count(distinct node_id, region_id) as dist_nodes_per_region
+from customer_nodes
+
+
+-- How many customers are allocated to each region?
+
+select 
+    r.region_name
+    ,count(distinct customer_id) as dist_nodes_per_region
+from customer_nodes c
+inner join regions r on r.region_id = c.region_id
+group by r.region_name
+
+
+-- How many days on average are customers reallocated to a different node?
+-- How many days on avg are the customers in a node, before changing?
+
+with cte as(
+select *
+    , iff( (lead(node_id) over (partition by customer_id order by start_date))=node_id
+         , Lead(END_DATE) OVER (partition by customer_id order by start_date),'1900-01-01') as lag_flag
+   
+   , iff(lag(node_id) over (partition by customer_id order by start_date) = node_id, 1,0) flag
+
+from customer_nodes
+where end_date!='9999-12-31'
+order by customer_id, start_date
+)
+
+select
+    avg( iff(end_date<lag_flag,datediff('day',start_date,lag_flag),datediff('day',start_date,end_date))) as avg_no_days
+from cte
+where flag = 0 
+
+
+-- What is the median, 80th and 95th percentile for this same reallocation days metric for each region?
+
+with cte as(
+select *
+    , iff( (lead(node_id) over (partition by customer_id order by start_date))=node_id
+         , Lead(END_DATE) OVER (partition by customer_id order by start_date),'1900-01-01') as lag_flag
+   
+   , iff(lag(node_id) over (partition by customer_id order by start_date) = node_id, 1,0) flag
+
+from customer_nodes
+where end_date!='9999-12-31'
+order by customer_id, start_date
+),
+
+cte2 as(
+select 
+    region_id
+    ,start_date
+    ,lag_flag
+    ,end_date
+    ,iff(end_date<lag_flag,datediff('day',start_date,lag_flag),datediff('day',start_date,end_date)) as no_days
+    , row_number() over (partition by region_id order by iff(end_date<lag_flag,datediff('day',start_date,lag_flag),datediff('day',start_date,end_date)) asc ) row_no
+    
+from cte
+where flag = 0
+),
+
+cte3 as(
+select *
+    , max(row_no) over (partition by region_id) as total
+    ,case 
+        when row_no = round((max(row_no) over (partition by region_id))/2) then 'Median'
+        when row_no = round((max(row_no) over (partition by region_id))*0.95) then '95th Percentile'
+        when row_no = round((max(row_no) over (partition by region_id))*0.8) then '80th Percentile'
+        end as percentiles
+from cte2
+)
+
+select 
+region_id
+,percentiles
+,min(no_days) as value
+from cte3
+where percentiles is not null
+group by region_id, percentiles
+order by region_id
